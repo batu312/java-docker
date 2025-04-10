@@ -1,0 +1,298 @@
+kubernetes EKS setup using eksctl 
+https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html
+Turnkey Cloud Solutions
+https://dev.to/aws-builders/amazon-eks-clusters-setup-step-by-step-instructions-2gp
+
+using amazon linux instance launch t2.micro and name it as EKS-client 
+sudo su -
+Install AWS CLI 
+
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+
+Install Kubectl CLI 
+curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.29.3/2024-04-19/bin/linux/amd64/kubectl
+chmod +x ./kubectl
+mv kubectl /usr/local/bin
+
+
+Install eksctl CLI 
+https://eksctl.io/getting-started/
+curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+cd /tmp
+sudo mv eksctl /usr/local/bin
+
+ABOVE ARE THE INSTALLATIONS 
+=============================
+
+REQUIRED IAM PERMISSIONS
+
+
+IAM---ROLES--EC2--EC2FULLACCESS--IAMFULLACCESS---AdministratorAccess---AWSCloudFormationFullAccess--roleneame(EKS role)--createrole
+
+Attach this role to EC2 instance -- select ec2 --actions--security---attach IAM Role 
+
+Now we have to create cluster using below command which is imperative way 
+eksctl create cluster --name my-cluster --region region-code
+eksctl create cluster --name my-cluster --region us-east-2 --node-type t2.medium
+eksctl create cluster --name balu-devops --region ap-southeast-1 --node-type t2.small
+
+we can delete Cluster after this activity by 
+eksctl delete cluster --name balu-devops --region ap-southeast-1
+eksctl delete cluster --name my-cluster --region ap-south-1
+
+
+
+lets create a deployment 
+
+kubectl create deployment webapp --image=nginx --port=80 --replicas=2
+
+and lets expose this deployment to service ALB
+
+kubectl expose deployment webapp --port=80 --type=LoadBalancer
+
+
+
+Insted of above commands we can use yaml files which is declarative way (https://eksctl.io/getting-started/)
+vi cluster.yaml
+
+
+# cluster.yaml
+# A cluster with two managed nodegroups
+---
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: managed-cluster
+  region: us-west-2
+
+managedNodeGroups:
+  - name: managed-ng-1
+    minSize: 2
+    maxSize: 4
+    desiredCapacity: 3
+    volumeSize: 20
+    ssh:
+      allow: true
+      publicKeyPath: ~/.ssh/ec2_id_rsa.pub
+      # new feature for restricting SSH access to certain AWS security group IDs
+      sourceSecurityGroupIds: ["sg-00241fbb12c607007"]
+    labels: {role: worker}
+    tags:
+      nodegroup-role: worker
+    iam:
+      withAddonPolicies:
+        externalDNS: true
+        certManager: true
+
+  - name: managed-ng-2
+    instanceType: t2.large
+    minSize: 2
+    maxSize: 3
+
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: balu-devops
+  region: ap-southeast-1
+nodeGroups:
+  - name: ng-1
+    instanceType: t2.small
+    desiredCapacity: 2
+  - name: ng-2
+    instanceType: m5.xlarge
+    desiredCapacity: 2
+managednodeGroups:
+  - name: ng-3
+    labels:
+      role: managed-nodes
+    instanceType: t2.small
+    minSize: 1
+    maxSize: 10
+    desiredCapacity: 1
+    volumeSize: 20
+  
+eksctl create cluster -f cluster.yaml
+
+eksctl get cluster --region ap-southeast-1 (will display the list of clusters)
+eksctl get nodegroup --region ap-southeast-1 --cluster  balu-devops (this will list the num of node groups created as part of cluster )
+eksctl scale nodegroup  --cluster balu-devops --nodes 4 --nodes-max 4 --name ng1 --region ap-southeast-1
+
+====================================================================
+
+how to scale the nodes and types of Auto scalers 
+
+1. HPA: Horizontal Pod autosscaler this will scale up the replicas of pods as per scaletargetref and max and min replicas we mentioned as per resource utilzation 
+2. VPA: vertical Pod autoscaler this will scale the resources like cpu and memory (if there are no resources in cluster it can scale the cpu and memory)
+3. cluster autoscaler : If there are pods in pending status due to lack of resources we can scale up the nodes in cluster 
+
+
+HPA: 
+
+kublet gets the info from deployment regarding the replicated pods metrics and it pass on the info to metric server and metric server will inform API SERVER to scale up the relicas 
+to max availabilty and API_SERVER will ask replication-controller to scale desired max replicas 
+
+formula for HPA
+
+d = ceil[a * (c/t)]
+d= desired num of replicas
+a is the current or actual num of replicas 
+c is the current value of metrics 
+t is the target value 
+
+2 = current replicas 
+90 = current value of metrics where 90 % of resource are utilised 
+70 = target value  of metrics which we defined to be used under target 
+d = ceil[2 * (90/70)] = ceil[2.57] = 3 replicas 
+
+kubectl top pods will give the metrics of resources used 
+
+
+VPA: 
+
+if there more resource it is costly and if the resources are less application performance goes down 
+vertical pod autoscaler will solve above issues 
+
+apiVersion: autoscaling.k8s.io/v1
+kind: verticalPodAutoscaler
+metadata: 
+  name: utility-api
+spec: 
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: utility-api
+  updatePolicy:  
+    updateMode: "off"
+
+updateMode can be Auto, off, intial.
+
+in production updateMode: "off" as if the VPA scales resources pod gets restarted and for some time there would be buisiness interuption 
+
+
+Cluster Autoscaler: If 1 or more unschedulable nodes are there then we want the k8s to scale the nodes 
+
+HPA
+apiVersion: autoscaling/v1
+kind: horizontalPodAutoscaler
+metadata:
+  annotations:
+    app: react-ui
+    env: dev
+spec:
+  maxReplicas: 2
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: extensions/v1
+    kind: Deployment
+    name: mavenwebapp
+  targetCPUUtilizationPercentage: 50
+========================================
+**********************************************************
+AMAZON EKS EBS CSI DRIVER
+
+add oidc 
+eksctl utils associate-iam-oidc-provider --cluster devcluster --approve
+ eksctl utils associate-iam-oidc-provider --cluster my-cluster --region ap-south-1 --approve
+
+create a policy as below 
+
+policy name : AmazonEBSCSIDriverPolicy
+add below to jason 
+
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ec2:AttachVolume",
+                "ec2:CreateSnapshot",
+                "ec2:CreateTags",
+                "ec2:CreateVolume",
+                "ec2:DeleteSnapshot",
+                "ec2:DeleteTags",
+                "ec2:DeleteVolume",
+                "ec2:DescribeInstances",
+                "ec2:DescribeSnapshots",
+                "ec2:DescribeTags",
+                "ec2:DescribeVolumes",
+                "ec2:DetachVolume"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+
+create policy and run below command 
+
+eksctl create iamserviceaccount \
+  --name ebs-csi-controller-sa \
+  --namespace kube-system \
+  --cluster my-cluster --region us-east-2 \
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+  --approve \
+  --role-only \
+  --role-name AmazonEKS_EBS_CSI_DriverRole
+
+
+eksctl create addon --name aws-ebs-csi-driver --cluster my-cluster  --region us-east-2 --service-account-role-arn arn:aws:iam::339712694228:role/AmazonEKS_EBS_CSI_DriverRole --force
+  
+(ARN should be copied from the role created AmazonEKS_EBS_CSI_DriverRole from previous command  )
+
+=========================================
+
+Prometheus installation 
+Add helm repo
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+
+Update helm repo
+helm repo update
+
+Install helm
+helm install prometheus prometheus-community/prometheus
+
+Expose Prometheus Service
+This is required to access prometheus-server using your browser.
+
+kubectl expose service prometheus-server --type=NodePort --target-port=9090 --name=prometheus-server-ext
+
+=====================================
+
+Grafana Installation 
+
+Add helm repo
+helm repo add grafana https://grafana.github.io/helm-charts
+
+Update helm repo
+helm repo update
+
+Install helm
+helm install grafana grafana/grafana
+
+Expose Grafana Service
+kubectl expose service grafana --type=NodePort --target-port=3000 --name=grafana-ext
+
+ kubectl expose service prometheus-kube-state-metrics  --type=NodePort --target-port=8080 --name=prometheus-kube-state-metrics-ext
+
+
+
+to decrept the password
+
+kubectl get secret grafana -o yaml
+echo "YWRtaW4=" | openssl base64 -d ; echo
+6417 is import number 
+==================================
+
+eksctl create iamserviceaccount \
+  --name ebs-csi-controller-sa \
+  --namespace kube-system \
+  --cluster my-cluster --region ap-south-1 \
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+  --approve \
+  --role-only \
+  --role-name 
