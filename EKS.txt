@@ -3,6 +3,8 @@ https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html
 Turnkey Cloud Solutions
 https://dev.to/aws-builders/amazon-eks-clusters-setup-step-by-step-instructions-2gp
 
+adding new line
+
 using amazon linux instance launch t2.micro and name it as EKS-client 
 sudo su -
 Install AWS CLI 
